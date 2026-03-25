@@ -29,6 +29,21 @@
                 }
             ],
             "role": "user"
-        }
+        },
+        "history": [
+            {
+                "contextId": "",
+                "kind": "message",
+                "messageId": "",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": ""
+                    }
+                ],
+                "role": "user",
+                "taskId": ""
+            }
+        ]
     }
 }

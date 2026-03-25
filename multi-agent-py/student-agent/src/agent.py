@@ -1,4 +1,5 @@
 import json
+from typing import Optional, List, Literal
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -18,22 +19,95 @@ SERVER_PARAMS = StdioServerParameters(
     args=[r""],
 )
 
-class Request(BaseModel):
-    # 这个请求数据只是暂时的，要改成下面task.json的形式
-    query: str = Field(..., description="用户的问题内容")
-    user_id: str = Field(default="guest", description="用户唯一标识")
+# ==========================================
+# 1. 基础组件 (Base Components)
+# ==========================================
+
+class FileData(BaseModel):
+    name: str = ""
+    mimeType: str = "image/png"
+    bytes: str = ""  # Base64 字符串
+
+class Part(BaseModel):
+    kind: Literal["text", "file"]
+    text: Optional[str] = None
+    file: Optional[FileData] = None
+
+# ==========================================
+# 2. 消息与历史实体 (Message & History)
+# ==========================================
+
+class MessageEntity(BaseModel):
+    contextId: str = ""
+    kind: str = "message"
+    messageId: str = ""
+    parts: List[Part] = Field(default_factory=list)
+    role: Literal["user", "assistant", "system"]
+    taskId: Optional[str] = ""
+
+# ==========================================
+# 3. 任务结果组件 (Task Result Components)
+# ==========================================
+
+class Artifact(BaseModel):
+    artifactsId: str = ""
+    description: str = ""
+    name: str = ""
+    parts: List[Part] = Field(default_factory=list)
+
+class TaskStatus(BaseModel):
+    state: Literal["pending", "processing", "completed", "failed"] = "completed"
+
+# ==========================================
+# 4. 完整的请求模型 (Request Model: message/send)
+# ==========================================
+
+class Configuration(BaseModel):
+    acceptedOutputModes: List[str] = ["text", "text/plain", "image/png"]
+
+class MessageSendParams(BaseModel):
+    configuration: Configuration = Field(default_factory=Configuration)
+    message: MessageEntity
+    history: List[MessageEntity] = Field(default_factory=list)
+
+class MessageSendRequest(BaseModel):
+    id: str = ""
+    jsonrpc: str = "2.0"
+    method: str = "message/send"
+    params: MessageSendParams
+
+# ==========================================
+# 5. 完整的响应模型 (Response Model: Task Result)
+# ==========================================
+
+class TaskResultData(BaseModel):
+    id: str = ""
+    kind: str = "task"
+    status: TaskStatus = Field(default_factory=TaskStatus)
+    contextId: str = ""
+    artifacts: List[Artifact] = Field(default_factory=list)
+    history: List[MessageEntity] = Field(default_factory=list)
+
+class MessageSendResponse(BaseModel):
+    id: str = ""
+    jsonrpc: str = "2.0"
+    result: TaskResultData
+
+SYSTEM_PROMPT = ""
 
 @app.post("/student/chat")
-async def chat_endpoint(request_data: Request):
-    query = request_data.query
+async def chat_endpoint(message_send_request:MessageSendRequest):
+
+    query = ""
 
     async def event_generator():
         async with stdio_client(SERVER_PARAMS) as (read, write):
             async with ClientSession(read, write) as session:
+
                 await session.initialize()
 
                 tools = await load_mcp_tools(session)
-                agent = create_react_agent(model, tools)
+                agent = create_react_agent(model, tools, state_modifier=SYSTEM_PROMPT)
 
                 inputs = {"messages": [("user", query)]}
 
