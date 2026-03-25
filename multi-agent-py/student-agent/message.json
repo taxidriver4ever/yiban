@@ -1,0 +1,34 @@
+{
+    "id":"",
+    "jsonrpc":"2.0",
+    "method":"message/send",
+    "params": {
+        "configuration": {
+            "acceptedOutputModes": [
+                "text",
+                "text/plain",
+                "image/png"
+            ]
+        },
+        "message": {
+            "contextId": "",
+            "kind": "message",
+            "messageId": "",
+            "parts": [
+                {
+                    "kind": "text",
+                    "text": ""
+                },
+                {
+                    "kind": "file",
+                    "file": {
+                        "name": "",
+                        "mimeType": "image/png",
+                        "bytes": ""
+                    }
+                }
+            ],
+            "role": "user"
+        }
+    }
+}
