@@ -83,10 +83,10 @@ async def route_query(input_data):
 async def main():
 
     # 测试 1: 正常回答
-    question = "你好，请问你是谁？你能帮我写一个 Java 的冒泡排序吗？"
+    # question = "你好，请问你是谁？你能帮我写一个 Java 的冒泡排序吗？"
 
     # 测试 2: 知识库回答
-    # question = "张无忌在面对阿三时，除了云手还用了什么？"
+    question = "张无忌在面对阿三时，除了云手还用了什么？"
 
     result = await route_query({"question":question})
 

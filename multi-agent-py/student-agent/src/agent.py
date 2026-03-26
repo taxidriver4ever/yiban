@@ -1,5 +1,4 @@
-import json
-from typing import Optional, List, Literal
+import uuid
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -7,10 +6,12 @@ from langchain_ollama import ChatOllama
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.prebuilt import create_react_agent
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
-from starlette.responses import StreamingResponse
+import task
+import agent_card
+import message
 
-app = FastAPI(title="MCP Agent API")
+MAIN_TITLE = "倚天屠龙记助手" # 帮我定个title
+app = FastAPI(title=MAIN_TITLE)
 model = ChatOllama(model="qwen2.5:7b", temperature=0) # 换模型改这里
 
 # 记得你的路径要改成你的电脑里的路径
@@ -19,114 +20,92 @@ SERVER_PARAMS = StdioServerParameters(
     args=[r""],
 )
 
-# ==========================================
-# 1. 基础组件 (Base Components)
-# ==========================================
-
-class FileData(BaseModel):
-    name: str = ""
-    mimeType: str = "image/png"
-    bytes: str = ""  # Base64 字符串
-
-class Part(BaseModel):
-    kind: Literal["text", "file"]
-    text: Optional[str] = None
-    file: Optional[FileData] = None
-
-# ==========================================
-# 2. 消息与历史实体 (Message & History)
-# ==========================================
-
-class MessageEntity(BaseModel):
-    contextId: str = ""
-    kind: str = "message"
-    messageId: str = ""
-    parts: List[Part] = Field(default_factory=list)
-    role: Literal["user", "assistant", "system"]
-    taskId: Optional[str] = ""
-
-# ==========================================
-# 3. 任务结果组件 (Task Result Components)
-# ==========================================
-
-class Artifact(BaseModel):
-    artifactsId: str = ""
-    description: str = ""
-    name: str = ""
-    parts: List[Part] = Field(default_factory=list)
-
-class TaskStatus(BaseModel):
-    state: Literal["pending", "processing", "completed", "failed"] = "completed"
-
-# ==========================================
-# 4. 完整的请求模型 (Request Model: message/send)
-# ==========================================
-
-class Configuration(BaseModel):
-    acceptedOutputModes: List[str] = ["text", "text/plain", "image/png"]
-
-class MessageSendParams(BaseModel):
-    configuration: Configuration = Field(default_factory=Configuration)
-    message: MessageEntity
-    history: List[MessageEntity] = Field(default_factory=list)
-
-class MessageSendRequest(BaseModel):
-    id: str = ""
-    jsonrpc: str = "2.0"
-    method: str = "message/send"
-    params: MessageSendParams
-
-# ==========================================
-# 5. 完整的响应模型 (Response Model: Task Result)
-# ==========================================
-
-class TaskResultData(BaseModel):
-    id: str = ""
-    kind: str = "task"
-    status: TaskStatus = Field(default_factory=TaskStatus)
-    contextId: str = ""
-    artifacts: List[Artifact] = Field(default_factory=list)
-    history: List[MessageEntity] = Field(default_factory=list)
-
-class MessageSendResponse(BaseModel):
-    id: str = ""
-    jsonrpc: str = "2.0"
-    result: TaskResultData
-
-SYSTEM_PROMPT = ""
-
 @app.post("/student/chat")
-async def chat_endpoint(message_send_request:MessageSendRequest):
+async def chat_endpoint(request: message.MessageSendRequest):
+    # 1. 提取基础信息
+    message_query = message.get_all_text_parts(request)
+    message_history = message.get_history_text(request)
+    message_configuration = message.get_config_as_json_str(request)
 
-    query = ""
+    # 2. 构造系统提示词
+    message_system_prompt = (
+        f"你是一个名为 {MAIN_TITLE} 的智能助手。 "
+        f"当前任务环境配置：输出模式支持 {message_configuration}。 "
+        f"对话历史：{message_history}。 "
+        "请结合历史上下文回答用户。如果需要使用工具，请直接调用。"
+    )
 
-    async def event_generator():
-        async with stdio_client(SERVER_PARAMS) as (read, write):
-            async with ClientSession(read, write) as session:
+    # 3. 直接在接口函数内运行异步逻辑 (不需要 event_generator)
+    async with stdio_client(SERVER_PARAMS) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-                await session.initialize()
+            # 加载工具并创建 Agent
+            tools = await load_mcp_tools(session)
+            agent = create_react_agent(model, tools, prompt=message_system_prompt)
 
-                tools = await load_mcp_tools(session)
-                agent = create_react_agent(model, tools, state_modifier=SYSTEM_PROMPT)
+            # 调用 Agent (注意输入格式)
+            result = await agent.ainvoke({"messages": [("user", message_query)]})
 
-                inputs = {"messages": [("user", query)]}
+            # 获取 AI 最后的文本回复
+            ai_content = result["messages"][-1].content
 
-                async for chunk, metadata in agent.astream(inputs, stream_mode="messages"):
-                    node = metadata.get("langgraph_node")
+            # 4. 使用你的 task.py 函数构造响应
+            # 先创建带内容的响应对象
+            message_send_response = task.create_response_with_artifact(str(ai_content))
 
-                    # 返回值的json是下面的message.json之后来改
-                    if node == "agent" and chunk.content:
-                        yield f"data: {json.dumps({'type': 'content', 'data': chunk.content}, ensure_ascii=False)}\n\n"
+            # 再追加请求到历史中（建议 taskId 动态化，这里先用你的 "task_01"）
+            final_response = task.append_message_to_task_history(
+                message_send_response,
+                request,
+                f"task_{uuid.uuid4().hex[:8]}"
+            )
 
-                    elif node == "tools" and chunk.content:
-                        tool_name = getattr(chunk, 'name', '未知工具')
-                        status_msg = f"正在调用工具：[{tool_name}] 检索知识库..."
+            # 直接返回 Pydantic 对象，FastAPI 会自动帮你转成 JSON
+            return final_response
 
-                        yield f"data: {json.dumps({'type': 'status', 'data': status_msg}, ensure_ascii=False)}\n\n"
 
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+@app.get("/student/manifest", response_model=agent_card.AgentManifest)
+async def get_agent_manifest():
+    return {
+        "capabilities": {
+            "streaming": False
+        },
+        "defaultInputModes": [
+            "text"
+        ],
+        "defaultOutputModes": [
+            "text"
+        ],
+        "description": "",
+        "name": "Agent",
+        "skills": [
+            {
+                "description": "",
+                "example": [
+                    ""
+                ],
+                "id": "",
+                "name": "",
+                "tags": [
+                    ""
+                ]
+            },
+            {
+                "description": "",
+                "example": [
+                    ""
+                ],
+                "id": "",
+                "name": "",
+                "tags": [
+                    ""
+                ]
+            }
+        ],
+        "url": "",
+        "version": ""
+    }
 
 if __name__ == "__main__":
     import uvicorn
